@@ -26,12 +26,13 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-
 // ─────────────────────────────────────────────────────────────────────────────
-//  Formateador de fechas
+//  Formateadores globales
 // ─────────────────────────────────────────────────────────────────────────────
 private val FMT_FECHA: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
-private val FMT_COP: NumberFormat = NumberFormat.getCurrencyInstance(Locale("es", "CO"))
+private val FMT_COP: NumberFormat = NumberFormat.getCurrencyInstance(Locale("es", "CO")).apply {
+    maximumFractionDigits = 0
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Pantalla principal
@@ -64,22 +65,18 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
 
             // ── 1. Salario bruto ─────────────────────────────────────────────
             OutlinedTextField(
-                // 1. Al mostrar el valor, le aplicamos el formateo de puntos visuales
                 value = formatearPuntosMiles(state.salarioBruto),
                 onValueChange = { nuevoTexto ->
-                    // 2. Al escribir, filtramos solo los números puros para el ViewModel
                     val soloDigitos = nuevoTexto.filter { it.isDigit() }
-
-                    // Evitamos que pongan salarios ridículamente largos que rompan el sistema (Max 12 dígitos)
+                    // Evitamos desbordamientos de enteros (Máximo 12 dígitos)
                     if (soloDigitos.length <= 12) {
                         viewModel.onSalarioChange(soloDigitos)
                     }
                 },
                 label = { Text("Salario Bruto (COP)") },
                 placeholder = { Text("Ej: 2.000.000") },
-                // Opcional: Esto fuerza a que en el celular solo se abra el teclado numérico
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -151,8 +148,8 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                         minDate = state.fechaInicio
                     )
 
-                    // Info días
-                    if (!state.calculado) {
+                    // Info días comerciales proyectados
+                    if (!state.esCalculado) {
                         val diasPrev = calcularDiasPrev(state.fechaInicio, state.fechaFin)
                         InfoChip("Días comerciales estimados: $diasPrev / 30")
                     }
@@ -199,7 +196,10 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
 
                     OutlinedTextField(
                         value = state.porcentajeIBC,
-                        onValueChange = { viewModel.onPorcentajeIBCChange(it) },
+                        onValueChange = { nuevoValor ->
+                            // Permitimos únicamente dígitos numéricos
+                            viewModel.onPorcentajeIBCChange(nuevoValor.filter { it.isDigit() })
+                        },
                         label = { Text("% del ingreso como IBC") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
@@ -208,7 +208,7 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                         supportingText = { Text("Mínimo legal: 40%  |  Máximo: 100%") }
                     )
 
-                    InfoChip("Salud: 12.5% del IBC  •  Pensión: 16% del IBC (aporte completo)")
+                    InfoChip("Salud: 12.5% del IBC  •  Pensión: 16% del IBC (aporte contratista)")
                 }
             }
 
@@ -222,7 +222,7 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
             }
 
             // ── 5. Resultados ────────────────────────────────────────────────
-            AnimatedVisibility(visible = state.calculado) {
+            AnimatedVisibility(visible = state.esCalculado) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 
                     HorizontalDivider()
@@ -237,7 +237,7 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                     if (state.tipoContrato == TipoContrato.NOMINA) {
                         InfoChip(
                             "Días trabajados: ${state.diasTrabajados} / 30  " +
-                                    "— Salario proporcional: ${FMT_COP.format(state.salarioBase)}"
+                                    "— Proporcional: ${FMT_COP.format(state.salarioBase)}"
                         )
                     }
 
@@ -247,6 +247,15 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                         state.salarioBruto.toDoubleOrNull() ?: 0.0,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+
+                    // Auxilio de Transporte (si aplica)
+                    if (state.auxilioTransporte > 0) {
+                        FilaResultado(
+                            "(+) Auxilio de transporte",
+                            state.auxilioTransporte,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
 
                     // Salud
                     FilaResultado(
@@ -263,23 +272,15 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                             "(-) Pensión empleado 4%"
                         else
                             "(-) Pensión contratista 16%",
-                        state.pension
+                        state.pension - state.fsp // Restamos el fsp para mostrar la pensión básica limpia
                     )
 
-                    // Fondo de solidaridad (incluido en pensión, se muestra en detalle)
-                    if (state.detalleCalculo.contains("solidaridad")) {
-                        val linea = state.detalleCalculo
-                            .lines()
-                            .firstOrNull { it.contains("solidaridad") }
-                            ?.trim() ?: ""
-                        if (linea.isNotEmpty()) {
-                            Text(
-                                linea,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 8.dp)
-                            )
-                        }
+                    // Fondo de solidaridad pensional (FSP) de forma clara e independiente
+                    if (state.fsp > 0) {
+                        FilaResultado(
+                            "(-) Fondo Solidaridad Pensional (FSP)",
+                            state.fsp
+                        )
                     }
 
                     // Retención en la fuente
@@ -287,7 +288,7 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                         FilaResultado("(-) Retención en la fuente", state.retencion)
                     }
 
-                    // Prima
+                    // Prima proporcional
                     if (state.prima > 0) {
                         FilaResultado(
                             "(+) Prima de servicios",
@@ -313,14 +314,14 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                         ) {
                             Column {
                                 Text(
-                                    "Salario neto",
+                                    "Salario neto recibido",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                                 if (state.tipoContrato == TipoContrato.NOMINA && state.incluirPrima) {
                                     Text(
-                                        "Incluye prima",
+                                        "Incluye prima legal",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.tertiary
                                     )
@@ -339,7 +340,7 @@ fun NominaScreen(viewModel: NominaViewModel = viewModel()) {
                     Text(
                         "* Cálculo orientativo basado en la normativa colombiana vigente " +
                                 "(UVT 2026 proyectado: ${FMT_COP.format(NominaViewModel.UVT_2026)}). " +
-                                "Valide con su contador.",
+                                "Valide siempre con su software contable de nómina electrónica.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -394,7 +395,6 @@ private fun DatePickerField(
                     override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis >= minMillis
                 }
             } else {
-                // En lugar de Default, creamos un objeto libre de restricciones
                 object : SelectableDates {}
             }
         )
@@ -424,7 +424,6 @@ private fun DatePickerField(
 // ─────────────────────────────────────────────────────────────────────────────
 //  Componentes auxiliares
 // ─────────────────────────────────────────────────────────────────────────────
-
 @Composable
 private fun FilaResultado(
     label: String,
@@ -472,7 +471,6 @@ private fun InfoChip(texto: String) {
     }
 }
 
-/** Mismo algoritmo del ViewModel, expuesto para preview en la UI. */
 private fun calcularDiasPrev(inicio: LocalDate, fin: LocalDate): Int {
     val d1 = inicio.dayOfMonth.coerceAtMost(30)
     val d2 = fin.dayOfMonth.coerceAtMost(30)
@@ -480,12 +478,11 @@ private fun calcularDiasPrev(inicio: LocalDate, fin: LocalDate): Int {
             (fin.monthValue - inicio.monthValue) * 30 +
             (d2 - d1)).coerceAtLeast(1)
 }
+
 fun formatearPuntosMiles(texto: String): String {
-    // Nos aseguramos de que solo procese números puro
     val digitos = texto.filter { it.isDigit() }
     if (digitos.isEmpty()) return ""
 
     val numero = digitos.toLongOrNull() ?: 0L
-    // Usamos el formato local con puntos para miles
     return "%,d".format(numero).replace(',', '.')
 }
